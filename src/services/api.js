@@ -1,21 +1,19 @@
 /**
- * 멀티 프로바이더 AI 대화 서비스 모듈 (100% 전자동 최저가 우선 스마트 라우팅)
- * - 사용자가 모델을 신경 쓸 필요 없이, 가장 저렴한 모델부터 순차적으로 자동 호출
- * - 1순위: Gemini 1.5 Flash-8B (구글 공식 최저가 모델 · 100만 토큰당 약 45원)
- * - 2순위: Gemini 1.5 Flash (표준 초저가 모델 · 100만 토큰당 약 100원)
- * - 3순위: Gemini 2.0 Flash (차세대 초고속 모델 · 100만 토큰당 약 130원)
- * - 429나 일시 장애 발생 시 사용자 대기 없이 다음 대체 모델로 0.1초 만에 자동 전환!
+ * 멀티 프로바이더 AI 대화 서비스 모듈 (구글 공식 권장 3.6-flash 최신 라인업 적용)
+ * - 구글 API 공식 지정 모델: models/gemini-3.6-flash
+ * - 429 및 일시 장애 시 2.5-flash 및 flash-lite로 자동 순환
  */
 
 import { usageTracker } from "./usageTracker";
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// 💰 최저가 순서로 자동 배치된 모델 파이프라인
+// 💰 구글 공식 최신 저가 Flash 모델 파이프라인 (gemini-3.6-flash 최우선)
 const AUTO_TIERED_GEMINI_MODELS = [
-  { id: "models/gemini-1.5-flash-8b", label: "Gemini 1.5 Flash-8B (최저가 1순위)" },
-  { id: "models/gemini-1.5-flash", label: "Gemini 1.5 Flash (표준 저가 2순위)" },
-  { id: "models/gemini-2.0-flash", label: "Gemini 2.0 Flash (차세대 3순위)" },
+  { id: "models/gemini-3.6-flash", label: "Gemini 3.6 Flash (구글 공식 권장 초경량 모델)" },
+  { id: "models/gemini-2.5-flash", label: "Gemini 2.5 Flash (대체 모델)" },
+  { id: "models/gemini-3.6-flash-lite", label: "Gemini 3.6 Flash Lite" },
+  { id: "models/gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite" },
 ];
 
 function sanitizeKey(key) {
@@ -67,7 +65,7 @@ export function saveAiConfig(config) {
 }
 
 /**
- * 1. Google Gemini API 호출 (최저가 순차 자동 라우팅)
+ * 1. Google Gemini API 호출 (gemini-3.6-flash 최우선 자동 라우팅)
  */
 async function callGemini(persona, conversation, userText, apiKey) {
   const cleanKey = (apiKey || "").trim();
@@ -102,7 +100,7 @@ async function callGemini(persona, conversation, userText, apiKey) {
 
   let lastErrorDetail = "";
 
-  // 🔄 1순위 최저가 모델부터 3순위까지 순차적으로 자동 시도
+  // 🔄 gemini-3.6-flash ➡️ 2.5-flash 순차 자동 시도
   for (let i = 0; i < AUTO_TIERED_GEMINI_MODELS.length; i++) {
     const modelItem = AUTO_TIERED_GEMINI_MODELS[i];
     const activeUrl = `https://generativelanguage.googleapis.com/v1beta/${modelItem.id}:generateContent?key=${cleanKey}`;
@@ -142,8 +140,8 @@ async function callGemini(persona, conversation, userText, apiKey) {
         throw new Error(`API 권한 오류 (403): ${errMsg}`);
       }
 
-      // 404 (미지원) 또는 429 (한도 초과) 또는 503인 경우 즉시 다음 순위 저가 모델로 자동 전환
-      console.warn(`[Gemini 자동 순환] ${modelItem.label} 응답(${response.status}). 다음 순위 모델로 즉시 자동 전환합니다...`);
+      // 404 (구버전 미지원) 또는 429인 경우 다음 모델로 즉시 전환
+      console.warn(`[Gemini 자동 순환] ${modelItem.label} (${response.status}). 다음 모델로 즉시 전환합니다...`);
     } catch (err) {
       if (
         err.message &&
@@ -156,11 +154,11 @@ async function callGemini(persona, conversation, userText, apiKey) {
     }
   }
 
-  // 모든 모델이 1분 할당량에 도달한 경우, 2초 후 1.5-flash로 1회 안전 재시도
-  await wait(2000);
+  // 1회 재시도 (1.5초 대기)
+  await wait(1500);
 
   try {
-    const fallbackUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${cleanKey}`;
+    const fallbackUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${cleanKey}`;
     const response = await fetch(fallbackUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -182,8 +180,8 @@ async function callGemini(persona, conversation, userText, apiKey) {
   } catch (e) {}
 
   throw new Error(
-    `구글 API 요청 한도에 도달했습니다. (${lastErrorDetail || "429 Rate Limit"})\n` +
-    `💡 무료 티어는 1분에 15회까지만 지원되므로 약 5~10초 후 다시 질문해 주세요!`
+    `구글 API 응답 오류: ${lastErrorDetail || "일시적 연결 지연"}\n` +
+    `💡 잠시 후 다시 질문해 주세요!`
   );
 }
 
