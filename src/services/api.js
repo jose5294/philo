@@ -1,19 +1,16 @@
 /**
- * 멀티 프로바이더 AI 대화 서비스 모듈
- * - 429 (RPM 초과) 발생 시: 다른 Gemini 모델(3.6-flash ➡️ 2.5-flash ➡️ 2.0-flash ➡️ 1.5-flash)로 즉시 자동 전환(Model Rotation)하여 대기 시간 0초 실현
- * - 각 모델별로 독립된 분당 20회 할당량이 주어지므로, 4개 모델 순환 시 분당 최대 80회까지 끊김 없이 지원!
+ * 멀티 프로바이더 AI 대화 서비스 모듈 (초저가 1.5-flash-8b 최우선 적용)
  */
 
 import { usageTracker } from "./usageTracker";
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// 사용 가능한 Gemini Flash 모델 풀 (429 발생 시 즉시 교체 순환)
-const GEMINI_MODELS_POOL = [
-  "models/gemini-3.6-flash",
-  "models/gemini-2.5-flash",
-  "models/gemini-2.0-flash",
-  "models/gemini-1.5-flash",
+// 💰 구글 최저가 모델 풀 (1순위: 100만 토큰당 45원인 초경량 1.5-flash-8b 최우선 호출)
+export const GEMINI_MODELS_POOL = [
+  { id: "models/gemini-1.5-flash-8b", name: "Gemini 1.5 Flash-8B (구글 최저가 초경량 · 100만 토큰당 약 45원)", cost: "최저가 (초저렴)" },
+  { id: "models/gemini-1.5-flash", name: "Gemini 1.5 Flash (표준 초경량 · 100만 토큰당 약 100원)", cost: "표준 저가" },
+  { id: "models/gemini-2.0-flash", name: "Gemini 2.0 Flash (최신 모델 · 100만 토큰당 약 130원)", cost: "최신 저가" },
 ];
 
 function sanitizeKey(key) {
@@ -37,7 +34,7 @@ export function getSavedAiConfig() {
         geminiKey,
         claudeKey: sanitizeKey(parsed.claudeKey) || sanitizeKey(import.meta.env?.VITE_ANTHROPIC_API_KEY),
         openaiKey: sanitizeKey(parsed.openaiKey) || sanitizeKey(import.meta.env?.VITE_OPENAI_API_KEY),
-        model: (parsed.model || "").trim(),
+        model: (parsed.model || "models/gemini-1.5-flash-8b").trim(),
       };
     }
   } catch (e) {}
@@ -47,7 +44,7 @@ export function getSavedAiConfig() {
     geminiKey: sanitizeKey(import.meta.env?.VITE_GEMINI_API_KEY),
     claudeKey: sanitizeKey(import.meta.env?.VITE_ANTHROPIC_API_KEY),
     openaiKey: sanitizeKey(import.meta.env?.VITE_OPENAI_API_KEY),
-    model: "",
+    model: "models/gemini-1.5-flash-8b",
   };
 }
 
@@ -59,7 +56,7 @@ export function saveAiConfig(config) {
       geminiKey: (config.geminiKey || "").trim(),
       claudeKey: (config.claudeKey || "").trim(),
       openaiKey: (config.openaiKey || "").trim(),
-      model: (config.model || "").trim(),
+      model: (config.model || "models/gemini-1.5-flash-8b").trim(),
     };
     localStorage.setItem("MIND_DIALOGUE_AI_CONFIG", JSON.stringify(cleanConfig));
   } catch (e) {
@@ -68,7 +65,7 @@ export function saveAiConfig(config) {
 }
 
 /**
- * 1. Google Gemini API 호출 (429 발생 시 모델 자동 순환 및 지연 재시도)
+ * 1. Google Gemini API 호출 (1.5-flash-8b 최우선)
  */
 async function callGemini(persona, conversation, userText, apiKey, customModel) {
   const cleanKey = (apiKey || "").trim();
@@ -79,7 +76,10 @@ async function callGemini(persona, conversation, userText, apiKey, customModel) 
     );
   }
 
-  const contents = conversation.map((msg) => ({
+  // 최근 4개 메시지만 전송하여 토큰 최소화
+  const recentHistory = conversation.slice(-4);
+
+  const contents = recentHistory.map((msg) => ({
     role: msg.role === "assistant" ? "model" : "user",
     parts: [{ text: msg.content }],
   }));
@@ -95,18 +95,17 @@ async function callGemini(persona, conversation, userText, apiKey, customModel) 
     contents,
     generationConfig: {
       temperature: 0.7,
-      maxOutputTokens: 2048,
+      maxOutputTokens: 384, // 짧고 명확한 답변으로 출력 비용 극소화
     },
   };
 
-  // 모델 목록 구성 (사용자 지정 모델이 있으면 우선 적용, 없으면 풀 전체 순환)
+  const poolIds = GEMINI_MODELS_POOL.map((m) => m.id);
   const candidateModels = customModel
-    ? [customModel, ...GEMINI_MODELS_POOL.filter((m) => m !== customModel)]
-    : GEMINI_MODELS_POOL;
+    ? [customModel, ...poolIds.filter((id) => id !== customModel)]
+    : poolIds;
 
   let lastError = null;
 
-  // 1단계: 모델 풀을 순환하며 즉시 시도 (각 모델마다 분당 20회 별도 할당량 활용)
   for (let i = 0; i < candidateModels.length; i++) {
     const model = candidateModels[i];
     const cleanModel = model.startsWith("models/") ? model : `models/${model}`;
@@ -119,9 +118,8 @@ async function callGemini(persona, conversation, userText, apiKey, customModel) 
         body: JSON.stringify(payload),
       });
 
-      // 404 (해당 모델 지원 종료/미지원) 또는 429 (분당 한도 도달)인 경우 다음 대체 모델로 즉시 전환
       if (!response.ok && (response.status === 404 || response.status === 429)) {
-        console.warn(`[Gemini ${cleanModel} HTTP ${response.status}] 다음 대체 모델로 즉시 전환합니다...`);
+        console.warn(`[Gemini ${cleanModel} HTTP ${response.status}] 다음 대체 모델로 전환합니다...`);
         continue;
       }
 
@@ -166,9 +164,7 @@ async function callGemini(persona, conversation, userText, apiKey, customModel) 
     }
   }
 
-  // 2단계: 모든 모델이 일시적으로 분당 한도에 도달한 경우, 4초 대기 후 1회 추가 재시도
-  console.warn("[Gemini 모든 모델 일시 한도 도달] 4초 대기 후 재시도합니다...");
-  await wait(4000);
+  await wait(2500);
 
   try {
     const retryModel = candidateModels[0];
@@ -197,7 +193,7 @@ async function callGemini(persona, conversation, userText, apiKey, customModel) 
 
   throw (
     lastError ||
-    new Error("순간적인 질문 요청이 많아 일시적으로 대기 중입니다. 약 5초 후 다시 질문해 주세요!")
+    new Error("순간적인 질문 요청이 많아 일시적으로 대기 중입니다. 잠시 후 다시 질문해 주세요!")
   );
 }
 
@@ -207,7 +203,8 @@ async function callGemini(persona, conversation, userText, apiKey, customModel) 
 async function callClaude(persona, conversation, userText, apiKey, customModel) {
   const cleanKey = (apiKey || "").trim();
   const model = customModel || "claude-3-5-sonnet-20241022";
-  const messages = [...conversation, { role: "user", content: userText }];
+  const recentHistory = conversation.slice(-4);
+  const messages = [...recentHistory, { role: "user", content: userText }];
 
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -219,7 +216,7 @@ async function callClaude(persona, conversation, userText, apiKey, customModel) 
     },
     body: JSON.stringify({
       model,
-      max_tokens: 2048,
+      max_tokens: 384,
       system: persona,
       messages,
     }),
@@ -244,9 +241,10 @@ async function callClaude(persona, conversation, userText, apiKey, customModel) 
 async function callOpenAI(persona, conversation, userText, apiKey, customModel) {
   const cleanKey = (apiKey || "").trim();
   const model = customModel || "gpt-4o-mini";
+  const recentHistory = conversation.slice(-4);
   const messages = [
     { role: "system", content: persona },
-    ...conversation,
+    ...recentHistory,
     { role: "user", content: userText },
   ];
 
@@ -260,7 +258,7 @@ async function callOpenAI(persona, conversation, userText, apiKey, customModel) 
       model,
       messages,
       temperature: 0.7,
-      max_tokens: 2048,
+      max_tokens: 384,
     }),
   });
 
