@@ -1,16 +1,16 @@
 /**
- * 멀티 프로바이더 AI 대화 서비스 모듈 (초저가 1.5-flash-8b 최우선 적용)
+ * 멀티 프로바이더 AI 대화 서비스 모듈
  */
 
 import { usageTracker } from "./usageTracker";
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// 💰 구글 최저가 모델 풀 (1순위: 100만 토큰당 45원인 초경량 1.5-flash-8b 최우선 호출)
+// 💰 검증된 안정적인 초경량 최저가 Flash 모델 풀
 export const GEMINI_MODELS_POOL = [
-  { id: "models/gemini-1.5-flash-8b", name: "Gemini 1.5 Flash-8B (구글 최저가 초경량 · 100만 토큰당 약 45원)", cost: "최저가 (초저렴)" },
-  { id: "models/gemini-1.5-flash", name: "Gemini 1.5 Flash (표준 초경량 · 100만 토큰당 약 100원)", cost: "표준 저가" },
-  { id: "models/gemini-2.0-flash", name: "Gemini 2.0 Flash (최신 모델 · 100만 토큰당 약 130원)", cost: "최신 저가" },
+  { id: "models/gemini-1.5-flash", name: "Gemini 1.5 Flash (표준 초저가 · 100만 토큰당 약 100원 - 추천)", cost: "추천 저가" },
+  { id: "models/gemini-2.0-flash", name: "Gemini 2.0 Flash (차세대 초고속 · 100만 토큰당 약 130원)", cost: "최신 저가" },
+  { id: "models/gemini-1.5-flash-8b", name: "Gemini 1.5 Flash-8B (초경량 모델 · 100만 토큰당 약 45원)", cost: "초저가" },
 ];
 
 function sanitizeKey(key) {
@@ -22,7 +22,6 @@ function sanitizeKey(key) {
   return trimmed;
 }
 
-// 로컬스토리지에서 사용자 설정 읽기
 export function getSavedAiConfig() {
   try {
     const raw = localStorage.getItem("MIND_DIALOGUE_AI_CONFIG");
@@ -34,7 +33,7 @@ export function getSavedAiConfig() {
         geminiKey,
         claudeKey: sanitizeKey(parsed.claudeKey) || sanitizeKey(import.meta.env?.VITE_ANTHROPIC_API_KEY),
         openaiKey: sanitizeKey(parsed.openaiKey) || sanitizeKey(import.meta.env?.VITE_OPENAI_API_KEY),
-        model: (parsed.model || "models/gemini-1.5-flash-8b").trim(),
+        model: (parsed.model || "models/gemini-1.5-flash").trim(),
       };
     }
   } catch (e) {}
@@ -44,11 +43,10 @@ export function getSavedAiConfig() {
     geminiKey: sanitizeKey(import.meta.env?.VITE_GEMINI_API_KEY),
     claudeKey: sanitizeKey(import.meta.env?.VITE_ANTHROPIC_API_KEY),
     openaiKey: sanitizeKey(import.meta.env?.VITE_OPENAI_API_KEY),
-    model: "models/gemini-1.5-flash-8b",
+    model: "models/gemini-1.5-flash",
   };
 }
 
-// 사용자 설정 저장
 export function saveAiConfig(config) {
   try {
     const cleanConfig = {
@@ -56,7 +54,7 @@ export function saveAiConfig(config) {
       geminiKey: (config.geminiKey || "").trim(),
       claudeKey: (config.claudeKey || "").trim(),
       openaiKey: (config.openaiKey || "").trim(),
-      model: (config.model || "models/gemini-1.5-flash-8b").trim(),
+      model: (config.model || "models/gemini-1.5-flash").trim(),
     };
     localStorage.setItem("MIND_DIALOGUE_AI_CONFIG", JSON.stringify(cleanConfig));
   } catch (e) {
@@ -65,7 +63,7 @@ export function saveAiConfig(config) {
 }
 
 /**
- * 1. Google Gemini API 호출 (1.5-flash-8b 최우선)
+ * 1. Google Gemini API 호출
  */
 async function callGemini(persona, conversation, userText, apiKey, customModel) {
   const cleanKey = (apiKey || "").trim();
@@ -76,9 +74,7 @@ async function callGemini(persona, conversation, userText, apiKey, customModel) 
     );
   }
 
-  // 최근 4개 메시지만 전송하여 토큰 최소화
   const recentHistory = conversation.slice(-4);
-
   const contents = recentHistory.map((msg) => ({
     role: msg.role === "assistant" ? "model" : "user",
     parts: [{ text: msg.content }],
@@ -95,7 +91,7 @@ async function callGemini(persona, conversation, userText, apiKey, customModel) 
     contents,
     generationConfig: {
       temperature: 0.7,
-      maxOutputTokens: 384, // 짧고 명확한 답변으로 출력 비용 극소화
+      maxOutputTokens: 384,
     },
   };
 
@@ -104,7 +100,7 @@ async function callGemini(persona, conversation, userText, apiKey, customModel) 
     ? [customModel, ...poolIds.filter((id) => id !== customModel)]
     : poolIds;
 
-  let lastError = null;
+  let lastErrorDetail = "";
 
   for (let i = 0; i < candidateModels.length; i++) {
     const model = candidateModels[i];
@@ -118,41 +114,36 @@ async function callGemini(persona, conversation, userText, apiKey, customModel) 
         body: JSON.stringify(payload),
       });
 
-      if (!response.ok && (response.status === 404 || response.status === 429)) {
-        console.warn(`[Gemini ${cleanModel} HTTP ${response.status}] 다음 대체 모델로 전환합니다...`);
-        continue;
+      if (response.ok) {
+        const data = await response.json();
+        const candidate = data.candidates?.[0];
+        const parts = candidate?.content?.parts || [];
+        const text = parts
+          .map((p) => (typeof p === "string" ? p : p.text || ""))
+          .join("")
+          .trim();
+
+        usageTracker.recordUsage();
+        return text || "음… 그 부분을 조금만 더 설명해 주겠니?";
       }
 
-      if (!response.ok) {
-        const errData = await response.json().catch(() => null);
-        const msg = errData?.error?.message || (await response.text());
+      const errData = await response.json().catch(() => null);
+      const errMsg = errData?.error?.message || (await response.text().catch(() => ""));
+      lastErrorDetail = `HTTP ${response.status}: ${errMsg}`;
 
-        if (response.status === 400 && msg.includes("API_KEY_INVALID")) {
-          throw new Error("입력하신 Google API 키가 유효하지 않습니다. 키 값을 다시 확인해 주세요.");
-        }
-        if (response.status === 401) {
-          throw new Error("API 키 인증에 실패했습니다 (401). 키가 올바른지 확인해 주세요.");
-        }
-        if (response.status === 403) {
-          throw new Error(`API 사용 권한 오류 (403): ${msg}`);
-        }
-
-        throw new Error(`Gemini 오류 (${response.status}): ${msg}`);
+      if (response.status === 400 && errMsg.includes("API_KEY_INVALID")) {
+        throw new Error("입력하신 Google API 키가 유효하지 않습니다. 키 값을 다시 확인해 주세요.");
+      }
+      if (response.status === 401) {
+        throw new Error("API 키 인증에 실패했습니다 (401). 올바른 키인지 확인해 주세요.");
+      }
+      if (response.status === 403) {
+        throw new Error(`API 권한 오류 (403): ${errMsg}`);
       }
 
-      const data = await response.json();
-      const candidate = data.candidates?.[0];
-
-      const parts = candidate?.content?.parts || [];
-      const text = parts
-        .map((p) => (typeof p === "string" ? p : p.text || ""))
-        .join("")
-        .trim();
-
-      usageTracker.recordUsage();
-      return text || "음… 그 부분을 조금만 더 설명해 주겠니?";
+      // 404 또는 429는 다음 모델로 폴백 시도
+      console.warn(`[Gemini ${cleanModel} ${response.status}] 대체 모델로 전환...`, errMsg);
     } catch (err) {
-      lastError = err;
       if (
         err.message &&
         (err.message.includes("유효하지 않습니다") ||
@@ -164,12 +155,12 @@ async function callGemini(persona, conversation, userText, apiKey, customModel) 
     }
   }
 
-  await wait(2500);
+  // 1회 재시도 (2초 대기)
+  await wait(2000);
 
   try {
-    const retryModel = candidateModels[0];
-    const cleanModel = retryModel.startsWith("models/") ? retryModel : `models/${retryModel}`;
-    const activeUrl = `https://generativelanguage.googleapis.com/v1beta/${cleanModel}:generateContent?key=${cleanKey}`;
+    const fallbackModel = "models/gemini-1.5-flash";
+    const activeUrl = `https://generativelanguage.googleapis.com/v1beta/${fallbackModel}:generateContent?key=${cleanKey}`;
 
     const response = await fetch(activeUrl, {
       method: "POST",
@@ -191,9 +182,9 @@ async function callGemini(persona, conversation, userText, apiKey, customModel) 
     }
   } catch (e) {}
 
-  throw (
-    lastError ||
-    new Error("순간적인 질문 요청이 많아 일시적으로 대기 중입니다. 잠시 후 다시 질문해 주세요!")
+  throw new Error(
+    `구글 API 요청 한도에 도달했습니다. (구글 응답: ${lastErrorDetail || "429 Rate Limit"})\n` +
+    `💡 무료 티어의 경우 1분에 15회까지만 허용되므로, 약 5~10초 후 다시 질문해 주세요!`
   );
 }
 
