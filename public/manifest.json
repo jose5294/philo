@@ -1,0 +1,24 @@
+{
+  "name": "마음을 묻다 — 철학 상담소",
+  "short_name": "마음을 묻다",
+  "description": "교과서 속 10인의 철학자와 대화하며 도덕적 고민을 나누는 생각 상담소",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f2eee5",
+  "theme_color": "#2c2420",
+  "icons": [
+    {
+      "src": "/icons/icon-192.svg",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/icon-512.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

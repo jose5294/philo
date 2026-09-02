@@ -1,0 +1,7 @@
+@import "./theme.css";
+
+/* 기본 여백 초기화 */
+html, body {
+  margin: 0;
+  padding: 0;
+}

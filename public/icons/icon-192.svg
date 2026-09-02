@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" width="192" height="192">
+  <rect width="192" height="192" rx="38" fill="#2c2420"/>
+  <circle cx="96" cy="96" r="76" fill="#f2eee5" stroke="#b35436" stroke-width="4"/>
+  <text x="96" y="128" font-family="'Noto Serif KR', Georgia, serif" font-size="92" font-weight="bold" fill="#b35436" text-anchor="middle">§</text>
+</svg>
