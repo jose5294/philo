@@ -1,17 +1,15 @@
 /**
- * 멀티 프로바이더 AI 대화 서비스 모듈 (구글 공식 권장 3.6-flash 최신 라인업 적용)
- * - 구글 API 공식 지정 모델: models/gemini-3.6-flash
- * - 429 및 일시 장애 시 2.5-flash 및 flash-lite로 자동 순환
+ * 멀티 프로바이더 AI 대화 서비스 모듈 (문장 끊김 방지 및 최신 3.6-flash 자동 연동)
  */
 
 import { usageTracker } from "./usageTracker";
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// 💰 구글 공식 최신 저가 Flash 모델 파이프라인 (gemini-3.6-flash 최우선)
+// 💰 구글 최신 저가 Flash 모델 파이프라인
 const AUTO_TIERED_GEMINI_MODELS = [
-  { id: "models/gemini-3.6-flash", label: "Gemini 3.6 Flash (구글 공식 권장 초경량 모델)" },
-  { id: "models/gemini-2.5-flash", label: "Gemini 2.5 Flash (대체 모델)" },
+  { id: "models/gemini-3.6-flash", label: "Gemini 3.6 Flash (구글 공식 권장 모델)" },
+  { id: "models/gemini-2.5-flash", label: "Gemini 2.5 Flash" },
   { id: "models/gemini-3.6-flash-lite", label: "Gemini 3.6 Flash Lite" },
   { id: "models/gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite" },
 ];
@@ -25,7 +23,6 @@ function sanitizeKey(key) {
   return trimmed;
 }
 
-// 로컬스토리지에서 사용자 설정 읽기
 export function getSavedAiConfig() {
   try {
     const raw = localStorage.getItem("MIND_DIALOGUE_AI_CONFIG");
@@ -49,7 +46,6 @@ export function getSavedAiConfig() {
   };
 }
 
-// 사용자 설정 저장
 export function saveAiConfig(config) {
   try {
     const cleanConfig = {
@@ -65,7 +61,7 @@ export function saveAiConfig(config) {
 }
 
 /**
- * 1. Google Gemini API 호출 (gemini-3.6-flash 최우선 자동 라우팅)
+ * 1. Google Gemini API 호출 (문장 완성 보장: maxOutputTokens 1024)
  */
 async function callGemini(persona, conversation, userText, apiKey) {
   const cleanKey = (apiKey || "").trim();
@@ -76,8 +72,8 @@ async function callGemini(persona, conversation, userText, apiKey) {
     );
   }
 
-  // 최근 4개 메시지만 압축 전송하여 비용 80% 절감
-  const recentHistory = conversation.slice(-4);
+  // 문맥을 온전히 유지하도록 최근 6개 메시지 전달
+  const recentHistory = conversation.slice(-6);
   const contents = recentHistory.map((msg) => ({
     role: msg.role === "assistant" ? "model" : "user",
     parts: [{ text: msg.content }],
@@ -94,13 +90,12 @@ async function callGemini(persona, conversation, userText, apiKey) {
     contents,
     generationConfig: {
       temperature: 0.7,
-      maxOutputTokens: 384,
+      maxOutputTokens: 1024, // 🌟 한국어 문장이 중간에 잘리지 않고 온전하게 끝까지 출력되도록 충분한 토큰 확보
     },
   };
 
   let lastErrorDetail = "";
 
-  // 🔄 gemini-3.6-flash ➡️ 2.5-flash 순차 자동 시도
   for (let i = 0; i < AUTO_TIERED_GEMINI_MODELS.length; i++) {
     const modelItem = AUTO_TIERED_GEMINI_MODELS[i];
     const activeUrl = `https://generativelanguage.googleapis.com/v1beta/${modelItem.id}:generateContent?key=${cleanKey}`;
@@ -129,7 +124,6 @@ async function callGemini(persona, conversation, userText, apiKey) {
       const errMsg = errData?.error?.message || (await response.text().catch(() => ""));
       lastErrorDetail = `HTTP ${response.status}: ${errMsg}`;
 
-      // 인증키 자체가 틀린 경우 즉시 에러 throw
       if (response.status === 400 && errMsg.includes("API_KEY_INVALID")) {
         throw new Error("입력하신 Google API 키가 유효하지 않습니다. 키 값을 다시 확인해 주세요.");
       }
@@ -140,7 +134,6 @@ async function callGemini(persona, conversation, userText, apiKey) {
         throw new Error(`API 권한 오류 (403): ${errMsg}`);
       }
 
-      // 404 (구버전 미지원) 또는 429인 경우 다음 모델로 즉시 전환
       console.warn(`[Gemini 자동 순환] ${modelItem.label} (${response.status}). 다음 모델로 즉시 전환합니다...`);
     } catch (err) {
       if (
@@ -191,7 +184,7 @@ async function callGemini(persona, conversation, userText, apiKey) {
 async function callClaude(persona, conversation, userText, apiKey) {
   const cleanKey = (apiKey || "").trim();
   const model = "claude-3-5-sonnet-20241022";
-  const recentHistory = conversation.slice(-4);
+  const recentHistory = conversation.slice(-6);
   const messages = [...recentHistory, { role: "user", content: userText }];
 
   const response = await fetch("https://api.anthropic.com/v1/messages", {
@@ -204,7 +197,7 @@ async function callClaude(persona, conversation, userText, apiKey) {
     },
     body: JSON.stringify({
       model,
-      max_tokens: 384,
+      max_tokens: 1024,
       system: persona,
       messages,
     }),
@@ -229,7 +222,7 @@ async function callClaude(persona, conversation, userText, apiKey) {
 async function callOpenAI(persona, conversation, userText, apiKey) {
   const cleanKey = (apiKey || "").trim();
   const model = "gpt-4o-mini";
-  const recentHistory = conversation.slice(-4);
+  const recentHistory = conversation.slice(-6);
   const messages = [
     { role: "system", content: persona },
     ...recentHistory,
@@ -246,7 +239,7 @@ async function callOpenAI(persona, conversation, userText, apiKey) {
       model,
       messages,
       temperature: 0.7,
-      max_tokens: 384,
+      max_tokens: 1024,
     }),
   });
 
