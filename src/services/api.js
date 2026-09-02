@@ -1,5 +1,7 @@
 /**
- * 멀티 프로바이더 AI 대화 서비스 모듈 (문장 끊김 방지 및 최신 3.6-flash 자동 연동)
+ * 멀티 프로바이더 AI 대화 서비스 모듈 (간헐적 끊김 방지 및 안전성 설정 완화)
+ * - safetySettings를 도덕/윤리 교육 상담에 맞게 최적화하여 고민 상담 중 문장 검열 잘림 방지
+ * - finishReason 검증 및 문장 완결성 보장
  */
 
 import { usageTracker } from "./usageTracker";
@@ -12,6 +14,14 @@ const AUTO_TIERED_GEMINI_MODELS = [
   { id: "models/gemini-2.5-flash", label: "Gemini 2.5 Flash" },
   { id: "models/gemini-3.6-flash-lite", label: "Gemini 3.6 Flash Lite" },
   { id: "models/gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite" },
+];
+
+// 🛡️ 도덕·윤리 상담 특화 안전 설정 (고민/갈등/고통 단어로 인한 AI 답변 중단 방지)
+const EDUCATIONAL_SAFETY_SETTINGS = [
+  { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_ONLY_HIGH" },
+  { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_ONLY_HIGH" },
+  { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_ONLY_HIGH" },
+  { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_ONLY_HIGH" },
 ];
 
 function sanitizeKey(key) {
@@ -61,7 +71,7 @@ export function saveAiConfig(config) {
 }
 
 /**
- * 1. Google Gemini API 호출 (문장 완성 보장: maxOutputTokens 1024)
+ * 1. Google Gemini API 호출 (안전 필터 검열 끊김 방지 및 완결성 보장)
  */
 async function callGemini(persona, conversation, userText, apiKey) {
   const cleanKey = (apiKey || "").trim();
@@ -90,8 +100,9 @@ async function callGemini(persona, conversation, userText, apiKey) {
     contents,
     generationConfig: {
       temperature: 0.7,
-      maxOutputTokens: 1024, // 🌟 한국어 문장이 중간에 잘리지 않고 온전하게 끝까지 출력되도록 충분한 토큰 확보
+      maxOutputTokens: 2048,
     },
+    safetySettings: EDUCATIONAL_SAFETY_SETTINGS,
   };
 
   let lastErrorDetail = "";
@@ -110,14 +121,22 @@ async function callGemini(persona, conversation, userText, apiKey) {
       if (response.ok) {
         const data = await response.json();
         const candidate = data.candidates?.[0];
+        
+        // 만약 구글 세이프티 필터 등으로 멈췄다면 경고 기록
+        if (candidate?.finishReason && candidate.finishReason !== "STOP") {
+          console.warn(`[Gemini FinishReason: ${candidate.finishReason}]`, candidate);
+        }
+
         const parts = candidate?.content?.parts || [];
         const text = parts
           .map((p) => (typeof p === "string" ? p : p.text || ""))
           .join("")
           .trim();
 
-        usageTracker.recordUsage();
-        return text || "음… 그 부분을 조금만 더 설명해 주겠니?";
+        if (text) {
+          usageTracker.recordUsage();
+          return text;
+        }
       }
 
       const errData = await response.json().catch(() => null);
@@ -167,8 +186,10 @@ async function callGemini(persona, conversation, userText, apiKey) {
         .join("")
         .trim();
 
-      usageTracker.recordUsage();
-      return text || "음… 그 부분을 조금만 더 설명해 주겠니?";
+      if (text) {
+        usageTracker.recordUsage();
+        return text;
+      }
     }
   } catch (e) {}
 
