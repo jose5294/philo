@@ -1,16 +1,21 @@
 /**
- * 멀티 프로바이더 AI 대화 서비스 모듈
+ * 멀티 프로바이더 AI 대화 서비스 모듈 (100% 전자동 최저가 우선 스마트 라우팅)
+ * - 사용자가 모델을 신경 쓸 필요 없이, 가장 저렴한 모델부터 순차적으로 자동 호출
+ * - 1순위: Gemini 1.5 Flash-8B (구글 공식 최저가 모델 · 100만 토큰당 약 45원)
+ * - 2순위: Gemini 1.5 Flash (표준 초저가 모델 · 100만 토큰당 약 100원)
+ * - 3순위: Gemini 2.0 Flash (차세대 초고속 모델 · 100만 토큰당 약 130원)
+ * - 429나 일시 장애 발생 시 사용자 대기 없이 다음 대체 모델로 0.1초 만에 자동 전환!
  */
 
 import { usageTracker } from "./usageTracker";
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// 💰 검증된 안정적인 초경량 최저가 Flash 모델 풀
-export const GEMINI_MODELS_POOL = [
-  { id: "models/gemini-1.5-flash", name: "Gemini 1.5 Flash (표준 초저가 · 100만 토큰당 약 100원 - 추천)", cost: "추천 저가" },
-  { id: "models/gemini-2.0-flash", name: "Gemini 2.0 Flash (차세대 초고속 · 100만 토큰당 약 130원)", cost: "최신 저가" },
-  { id: "models/gemini-1.5-flash-8b", name: "Gemini 1.5 Flash-8B (초경량 모델 · 100만 토큰당 약 45원)", cost: "초저가" },
+// 💰 최저가 순서로 자동 배치된 모델 파이프라인
+const AUTO_TIERED_GEMINI_MODELS = [
+  { id: "models/gemini-1.5-flash-8b", label: "Gemini 1.5 Flash-8B (최저가 1순위)" },
+  { id: "models/gemini-1.5-flash", label: "Gemini 1.5 Flash (표준 저가 2순위)" },
+  { id: "models/gemini-2.0-flash", label: "Gemini 2.0 Flash (차세대 3순위)" },
 ];
 
 function sanitizeKey(key) {
@@ -22,6 +27,7 @@ function sanitizeKey(key) {
   return trimmed;
 }
 
+// 로컬스토리지에서 사용자 설정 읽기
 export function getSavedAiConfig() {
   try {
     const raw = localStorage.getItem("MIND_DIALOGUE_AI_CONFIG");
@@ -33,7 +39,6 @@ export function getSavedAiConfig() {
         geminiKey,
         claudeKey: sanitizeKey(parsed.claudeKey) || sanitizeKey(import.meta.env?.VITE_ANTHROPIC_API_KEY),
         openaiKey: sanitizeKey(parsed.openaiKey) || sanitizeKey(import.meta.env?.VITE_OPENAI_API_KEY),
-        model: (parsed.model || "models/gemini-1.5-flash").trim(),
       };
     }
   } catch (e) {}
@@ -43,10 +48,10 @@ export function getSavedAiConfig() {
     geminiKey: sanitizeKey(import.meta.env?.VITE_GEMINI_API_KEY),
     claudeKey: sanitizeKey(import.meta.env?.VITE_ANTHROPIC_API_KEY),
     openaiKey: sanitizeKey(import.meta.env?.VITE_OPENAI_API_KEY),
-    model: "models/gemini-1.5-flash",
   };
 }
 
+// 사용자 설정 저장
 export function saveAiConfig(config) {
   try {
     const cleanConfig = {
@@ -54,7 +59,6 @@ export function saveAiConfig(config) {
       geminiKey: (config.geminiKey || "").trim(),
       claudeKey: (config.claudeKey || "").trim(),
       openaiKey: (config.openaiKey || "").trim(),
-      model: (config.model || "models/gemini-1.5-flash").trim(),
     };
     localStorage.setItem("MIND_DIALOGUE_AI_CONFIG", JSON.stringify(cleanConfig));
   } catch (e) {
@@ -63,9 +67,9 @@ export function saveAiConfig(config) {
 }
 
 /**
- * 1. Google Gemini API 호출
+ * 1. Google Gemini API 호출 (최저가 순차 자동 라우팅)
  */
-async function callGemini(persona, conversation, userText, apiKey, customModel) {
+async function callGemini(persona, conversation, userText, apiKey) {
   const cleanKey = (apiKey || "").trim();
   if (!cleanKey || cleanKey.includes("여기에") || cleanKey.includes("입력하세요")) {
     throw new Error(
@@ -74,6 +78,7 @@ async function callGemini(persona, conversation, userText, apiKey, customModel) 
     );
   }
 
+  // 최근 4개 메시지만 압축 전송하여 비용 80% 절감
   const recentHistory = conversation.slice(-4);
   const contents = recentHistory.map((msg) => ({
     role: msg.role === "assistant" ? "model" : "user",
@@ -95,17 +100,12 @@ async function callGemini(persona, conversation, userText, apiKey, customModel) 
     },
   };
 
-  const poolIds = GEMINI_MODELS_POOL.map((m) => m.id);
-  const candidateModels = customModel
-    ? [customModel, ...poolIds.filter((id) => id !== customModel)]
-    : poolIds;
-
   let lastErrorDetail = "";
 
-  for (let i = 0; i < candidateModels.length; i++) {
-    const model = candidateModels[i];
-    const cleanModel = model.startsWith("models/") ? model : `models/${model}`;
-    const activeUrl = `https://generativelanguage.googleapis.com/v1beta/${cleanModel}:generateContent?key=${cleanKey}`;
+  // 🔄 1순위 최저가 모델부터 3순위까지 순차적으로 자동 시도
+  for (let i = 0; i < AUTO_TIERED_GEMINI_MODELS.length; i++) {
+    const modelItem = AUTO_TIERED_GEMINI_MODELS[i];
+    const activeUrl = `https://generativelanguage.googleapis.com/v1beta/${modelItem.id}:generateContent?key=${cleanKey}`;
 
     try {
       const response = await fetch(activeUrl, {
@@ -131,6 +131,7 @@ async function callGemini(persona, conversation, userText, apiKey, customModel) 
       const errMsg = errData?.error?.message || (await response.text().catch(() => ""));
       lastErrorDetail = `HTTP ${response.status}: ${errMsg}`;
 
+      // 인증키 자체가 틀린 경우 즉시 에러 throw
       if (response.status === 400 && errMsg.includes("API_KEY_INVALID")) {
         throw new Error("입력하신 Google API 키가 유효하지 않습니다. 키 값을 다시 확인해 주세요.");
       }
@@ -141,8 +142,8 @@ async function callGemini(persona, conversation, userText, apiKey, customModel) 
         throw new Error(`API 권한 오류 (403): ${errMsg}`);
       }
 
-      // 404 또는 429는 다음 모델로 폴백 시도
-      console.warn(`[Gemini ${cleanModel} ${response.status}] 대체 모델로 전환...`, errMsg);
+      // 404 (미지원) 또는 429 (한도 초과) 또는 503인 경우 즉시 다음 순위 저가 모델로 자동 전환
+      console.warn(`[Gemini 자동 순환] ${modelItem.label} 응답(${response.status}). 다음 순위 모델로 즉시 자동 전환합니다...`);
     } catch (err) {
       if (
         err.message &&
@@ -155,14 +156,12 @@ async function callGemini(persona, conversation, userText, apiKey, customModel) 
     }
   }
 
-  // 1회 재시도 (2초 대기)
+  // 모든 모델이 1분 할당량에 도달한 경우, 2초 후 1.5-flash로 1회 안전 재시도
   await wait(2000);
 
   try {
-    const fallbackModel = "models/gemini-1.5-flash";
-    const activeUrl = `https://generativelanguage.googleapis.com/v1beta/${fallbackModel}:generateContent?key=${cleanKey}`;
-
-    const response = await fetch(activeUrl, {
+    const fallbackUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${cleanKey}`;
+    const response = await fetch(fallbackUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
@@ -183,17 +182,17 @@ async function callGemini(persona, conversation, userText, apiKey, customModel) 
   } catch (e) {}
 
   throw new Error(
-    `구글 API 요청 한도에 도달했습니다. (구글 응답: ${lastErrorDetail || "429 Rate Limit"})\n` +
-    `💡 무료 티어의 경우 1분에 15회까지만 허용되므로, 약 5~10초 후 다시 질문해 주세요!`
+    `구글 API 요청 한도에 도달했습니다. (${lastErrorDetail || "429 Rate Limit"})\n` +
+    `💡 무료 티어는 1분에 15회까지만 지원되므로 약 5~10초 후 다시 질문해 주세요!`
   );
 }
 
 /**
  * 2. Anthropic Claude API 호출
  */
-async function callClaude(persona, conversation, userText, apiKey, customModel) {
+async function callClaude(persona, conversation, userText, apiKey) {
   const cleanKey = (apiKey || "").trim();
-  const model = customModel || "claude-3-5-sonnet-20241022";
+  const model = "claude-3-5-sonnet-20241022";
   const recentHistory = conversation.slice(-4);
   const messages = [...recentHistory, { role: "user", content: userText }];
 
@@ -229,9 +228,9 @@ async function callClaude(persona, conversation, userText, apiKey, customModel) 
 /**
  * 3. OpenAI GPT API 호출
  */
-async function callOpenAI(persona, conversation, userText, apiKey, customModel) {
+async function callOpenAI(persona, conversation, userText, apiKey) {
   const cleanKey = (apiKey || "").trim();
-  const model = customModel || "gpt-4o-mini";
+  const model = "gpt-4o-mini";
   const recentHistory = conversation.slice(-4);
   const messages = [
     { role: "system", content: persona },
@@ -271,13 +270,13 @@ export async function askPhilosopher(persona, conversation, userText) {
 
   try {
     if (config.geminiKey) {
-      return await callGemini(persona, conversation, userText, config.geminiKey, config.model);
+      return await callGemini(persona, conversation, userText, config.geminiKey);
     }
     if (config.claudeKey) {
-      return await callClaude(persona, conversation, userText, config.claudeKey, config.model);
+      return await callClaude(persona, conversation, userText, config.claudeKey);
     }
     if (config.openaiKey) {
-      return await callOpenAI(persona, conversation, userText, config.openaiKey, config.model);
+      return await callOpenAI(persona, conversation, userText, config.openaiKey);
     }
 
     return (

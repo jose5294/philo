@@ -1,15 +1,14 @@
 import React, { useState, useEffect } from "react";
-import { getSavedAiConfig, saveAiConfig, GEMINI_MODELS_POOL } from "../../services/api";
+import { getSavedAiConfig, saveAiConfig } from "../../services/api";
 
 /**
- * 브라우저 화면에서 바로 API 키 및 저렴한 모델을 선택할 수 있는 모달
+ * 사용자 설정 모달 (모델 선택은 100% 자동 최적화되므로 깔끔하게 키만 관리)
  */
 export function ApiKeyModal({ isOpen, onClose, onToast }) {
   const [provider, setProvider] = useState("gemini");
   const [geminiKey, setGeminiKey] = useState("");
   const [claudeKey, setClaudeKey] = useState("");
   const [openaiKey, setOpenaiKey] = useState("");
-  const [model, setModel] = useState("models/gemini-1.5-flash-8b");
 
   useEffect(() => {
     if (isOpen) {
@@ -18,7 +17,6 @@ export function ApiKeyModal({ isOpen, onClose, onToast }) {
       setGeminiKey(config.geminiKey || "");
       setClaudeKey(config.claudeKey || "");
       setOpenaiKey(config.openaiKey || "");
-      setModel(config.model || "models/gemini-1.5-flash-8b");
     }
   }, [isOpen]);
 
@@ -30,9 +28,8 @@ export function ApiKeyModal({ isOpen, onClose, onToast }) {
       geminiKey: geminiKey.trim(),
       claudeKey: claudeKey.trim(),
       openaiKey: openaiKey.trim(),
-      model: model.trim(),
     });
-    onToast?.("✓ AI 모델 및 설정이 성공적으로 저장되었습니다!");
+    onToast?.("✓ AI API 설정이 저장되었습니다!");
     onClose();
   };
 
@@ -40,13 +37,11 @@ export function ApiKeyModal({ isOpen, onClose, onToast }) {
     setGeminiKey("");
     setClaudeKey("");
     setOpenaiKey("");
-    setModel("models/gemini-1.5-flash-8b");
     saveAiConfig({
       provider: "gemini",
       geminiKey: "",
       claudeKey: "",
       openaiKey: "",
-      model: "models/gemini-1.5-flash-8b",
     });
     onToast?.("✓ 설정이 초기화되었습니다.");
     onClose();
@@ -56,7 +51,7 @@ export function ApiKeyModal({ isOpen, onClose, onToast }) {
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-content" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
-          <div className="modal-title">⚙️ 생성형 AI 모델 및 API 설정</div>
+          <div className="modal-title">⚙️ AI API 키 설정</div>
           <button className="modal-close" onClick={onClose}>
             ✕
           </button>
@@ -65,14 +60,14 @@ export function ApiKeyModal({ isOpen, onClose, onToast }) {
         <div className="modal-body" style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
           <div>
             <label style={{ fontSize: "12px", fontWeight: "600", color: "var(--ink)" }}>
-              대화용 AI 엔진 선택
+              대화용 AI 엔진
             </label>
             <div className="provider-tabs" style={{ marginTop: "6px" }}>
               <button
                 className={`tab-btn ${provider === "gemini" ? "active" : ""}`}
                 onClick={() => setProvider("gemini")}
               >
-                🌟 Google Gemini (초저가 추천)
+                🌟 Google Gemini (초저가 자동 최적화)
               </button>
               <button
                 className={`tab-btn ${provider === "claude" ? "active" : ""}`}
@@ -89,48 +84,19 @@ export function ApiKeyModal({ isOpen, onClose, onToast }) {
             </div>
 
             {provider === "gemini" && (
-              <div style={{ display: "flex", flexDirection: "column", gap: "12px", marginTop: "12px" }}>
-                <div className="field-group">
-                  <label style={{ fontWeight: "600", fontSize: "13px" }}>
-                    🎯 사용할 Gemini 모델 선택 (단가별)
-                  </label>
-                  <select
-                    value={model}
-                    onChange={(e) => setModel(e.target.value)}
-                    style={{
-                      width: "100%",
-                      padding: "10px",
-                      border: "1.5px solid var(--ink)",
-                      borderRadius: "4px",
-                      background: "var(--paper)",
-                      fontSize: "13.5px",
-                      fontFamily: "var(--font-body)",
-                      cursor: "pointer",
-                      marginTop: "4px"
-                    }}
-                  >
-                    {GEMINI_MODELS_POOL.map((m) => (
-                      <option key={m.id} value={m.id}>
-                        {m.name}
-                      </option>
-                    ))}
-                  </select>
-                  <div className="field-tip" style={{ color: "var(--accent)", fontWeight: "500", marginTop: "4px" }}>
-                    💡 <strong>1.5 Flash-8B</strong>는 구글의 공식 초경량 모델로 <strong>100만 토큰당 약 45원</strong>(커피 한 잔 값의 1/100)으로 가장 저렴합니다.
-                  </div>
+              <div className="field-group" style={{ marginTop: "12px" }}>
+                <label>Google Gemini API Key (AIzaSy...)</label>
+                <input
+                  type="password"
+                  placeholder="AIzaSy..."
+                  value={geminiKey}
+                  onChange={(e) => setGeminiKey(e.target.value)}
+                />
+                <div className="field-tip" style={{ marginTop: "6px", lineHeight: "1.5" }}>
+                  💡 <strong>비용 자동 최적화 적용 중</strong>: 구글의 최저가 모델(<strong>Gemini 1.5 Flash-8B ➡️ 1.5 Flash ➡️ 2.0 Flash</strong>) 순서로 시스템이 비용을 최소화하도록 알아서 자동 호출합니다.
                 </div>
-
-                <div className="field-group">
-                  <label>Google Gemini API Key (AIzaSy...)</label>
-                  <input
-                    type="password"
-                    placeholder="AIzaSy..."
-                    value={geminiKey}
-                    onChange={(e) => setGeminiKey(e.target.value)}
-                  />
-                  <div className="field-tip">
-                    👉 <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer">Google AI Studio</a>에서 발급받은 키를 붙여넣으세요.
-                  </div>
+                <div className="field-tip" style={{ marginTop: "4px" }}>
+                  👉 <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer">Google AI Studio</a>에서 발급받으신 키를 붙여넣으세요.
                 </div>
               </div>
             )}
