@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
+import { Analytics } from "@vercel/analytics/react";
 import { Home } from "./components/home/Home";
 import { Chat } from "./components/chat/Chat";
 import { ApiKeyModal } from "./components/common/ApiKeyModal";
@@ -163,6 +164,9 @@ export default function App() {
       <PwaInstallBanner />
 
       <Toast message={toastMessage} />
+
+      {/* 📊 Vercel Web Analytics */}
+      <Analytics />
     </div>
   );
 }
